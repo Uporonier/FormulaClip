@@ -4,7 +4,9 @@ import configparser
 import ctypes
 import json
 import os
+import sys
 import threading
+from datetime import datetime
 import urllib.error
 import urllib.request
 from io import BytesIO
@@ -13,8 +15,14 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from PIL import ImageGrab, ImageTk
+from PIL import Image, ImageEnhance, ImageGrab, ImageTk
+import pystray
 from pynput import keyboard
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 # Render at the monitor's native DPI before Tk creates any window.  Without
 # this declaration Windows may bitmap-scale the whole UI and blur text.
@@ -28,10 +36,16 @@ except Exception:
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FormulaClip"
 CONFIG_PATH = APP_DIR / "config.ini"
+HISTORY_DIR = APP_DIR / "history"
+HISTORY_PATH = APP_DIR / "history.json"
 PROMPT = """Read the mathematical formula in this image and return standard LaTeX.
 Ignore surrounding prose, page numbers, and captions. Return only JSON with this exact schema:
 {\"formula\": \"yes\", \"content\": \"LaTeX without dollar delimiters\"}
 If there is no formula return {\"formula\": \"no\", \"content\": \"\"}. Do not use Markdown fences."""
+
+
+def resource_path(name):
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / name
 
 
 class Settings:
@@ -44,6 +58,10 @@ class Settings:
             "model": "gpt-5.5",
             "hotkey": "Shift+Space",
             "provider": "OpenAI 兼容",
+            "autostart": "0",
+            "keep_history": "1",
+            "history_limit": "100",
+            "show_toast": "1",
         }
         if CONFIG_PATH.exists():
             self.data.read(CONFIG_PATH, encoding="utf-8")
@@ -64,19 +82,72 @@ class Settings:
             self.data.write(file)
 
 
+class HistoryStore:
+    def __init__(self):
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+    def read(self):
+        if not HISTORY_PATH.exists():
+            return []
+        try:
+            return json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def add(self, image, latex, limit):
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        image_path = HISTORY_DIR / f"{stamp}.png"
+        image.save(image_path, format="PNG")
+        items = self.read()
+        items.insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "latex": latex, "image": str(image_path)})
+        if limit != "0":
+            items = items[: int(limit)]
+        HISTORY_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+        return items[0]
+
+
+class ToggleSwitch(tk.Frame):
+    def __init__(self, parent, variable, **kwargs):
+        super().__init__(parent, bg="#ffffff", width=48, height=28, **kwargs)
+        self.variable = variable
+        self.canvas = tk.Canvas(self, width=48, height=28, bg="#ffffff", highlightthickness=0)
+        self.canvas.pack()
+        self.canvas.bind("<Button-1>", self.toggle)
+        self.variable.trace_add("write", lambda *_: self.draw())
+        self.draw()
+
+    def toggle(self, _event=None):
+        self.variable.set(not self.variable.get())
+
+    def draw(self):
+        self.canvas.delete("all")
+        active = self.variable.get()
+        color = "#007aff" if active else "#d2d2d7"
+        self.canvas.create_oval(1, 1, 47, 27, fill=color, outline=color)
+        x = 34 if active else 14
+        self.canvas.create_oval(x - 10, 4, x + 10, 24, fill="#ffffff", outline="#ffffff")
+
+    def get(self):
+        return bool(self.variable.get())
+
+
 class CaptureOverlay:
     def __init__(self, app, image):
         self.app = app
         self.image = image
         self.start = None
         self.rectangle = None
+        self.selected_box = None
+        self.action_bar = None
         self.window = tk.Toplevel(app.root)
         self.window.attributes("-fullscreen", True)
         self.window.attributes("-topmost", True)
         self.window.configure(cursor="crosshair", bg="#101828")
         self.canvas = tk.Canvas(self.window, highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
-        self.preview = ImageTk.PhotoImage(image)
+        dimmed = ImageEnhance.Brightness(image).enhance(0.38)
+        self.preview = ImageTk.PhotoImage(dimmed)
         self.canvas.create_image(0, 0, image=self.preview, anchor="nw")
         self.canvas.bind("<ButtonPress-1>", self.begin)
         self.canvas.bind("<B1-Motion>", self.move)
@@ -86,7 +157,7 @@ class CaptureOverlay:
 
     def begin(self, event):
         self.start = (event.x, event.y)
-        self.rectangle = self.canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#7dd3fc", width=2)
+        self.rectangle = self.canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#007aff", width=3)
 
     def move(self, event):
         if self.start and self.rectangle:
@@ -99,12 +170,25 @@ class CaptureOverlay:
         right, bottom = event.x, event.y
         left, right = sorted((left, right))
         top, bottom = sorted((top, bottom))
-        self.window.destroy()
         if right - left < 8 or bottom - top < 8:
+            self.window.destroy()
             self.app.show_status("截图区域太小，请重新选择。", "warn")
             self.app.root.deiconify()
             return
-        self.app.recognize(self.image.crop((left, top, right, bottom)))
+        self.selected_box = (left, top, right, bottom)
+        if self.action_bar:
+            self.action_bar.destroy()
+        self.action_bar = tk.Frame(self.window, bg="#ffffff", padx=8, pady=6)
+        self.action_bar.place(x=max(12, min(left, self.window.winfo_screenwidth() - 170)), y=min(bottom + 12, self.window.winfo_screenheight() - 58))
+        tk.Button(self.action_bar, text="识别", command=self.confirm_selection, relief="flat", bd=0, bg="#007aff", fg="#ffffff", activebackground="#0066d6", activeforeground="#ffffff", font=("Microsoft YaHei UI", 10, "bold"), padx=14, pady=5).pack(side="left")
+        tk.Button(self.action_bar, text="取消", command=self.cancel, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=("Microsoft YaHei UI", 10), padx=12, pady=5).pack(side="left", padx=(6, 0))
+
+    def confirm_selection(self):
+        if not self.selected_box:
+            return
+        box = self.selected_box
+        self.window.destroy()
+        self.app.recognize(self.image.crop(box))
 
     def cancel(self):
         self.window.destroy()
@@ -117,22 +201,51 @@ class FormulaClip:
         self.settings = Settings()
         self.root = tk.Tk()
         self.root.title("Formula Clip")
-        self.root.geometry("780x650")
-        self.root.minsize(720, 580)
-        self.root.configure(bg="#0f172a")
-        self.root.protocol("WM_DELETE_WINDOW", self.quit)
+        self.root.geometry("900x700")
+        self.root.minsize(820, 620)
+        self.root.configure(bg="#f5f5f7")
+        try:
+            self.root.iconbitmap(str(resource_path("assets/formulaclip-icon.ico")))
+        except Exception:
+            pass
+        self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.hotkey_listener = None
+        self.tray_icon = None
+        self.tray_thread = None
+        self.history = HistoryStore()
+        self.last_image = None
+        self.history_rows = {}
         self.build_ui()
+        self.apply_autostart()
         self.start_hotkey()
+        self.start_tray()
+
+    def start_tray(self):
+        icon_image = Image.open(resource_path("assets/formulaclip-icon.png")).convert("RGBA")
+        menu = pystray.Menu(
+            pystray.MenuItem("打开 Formula Clip", lambda: self.root.after(0, self.show_from_tray)),
+            pystray.MenuItem("退出程序", lambda: self.root.after(0, self.quit)),
+        )
+        self.tray_icon = pystray.Icon("FormulaClip", icon_image, "Formula Clip", menu)
+        self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
+        self.tray_thread.start()
+
+    def hide_to_tray(self):
+        self.root.withdraw()
+
+    def show_from_tray(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
 
     def build_ui(self):
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        self.root.configure(bg="#ffffff")
-        style.configure("Page.TFrame", background="#ffffff")
+        self.root.configure(bg="#f5f5f7")
+        style.configure("Page.TFrame", background="#f5f5f7")
         style.configure("Card.TFrame", background="#ffffff")
         ui_font = "Microsoft YaHei UI"
-        style.configure("Title.TLabel", background="#ffffff", foreground="#1d1d1f", font=(ui_font, 27, "bold"))
+        style.configure("Title.TLabel", background="#ffffff", foreground="#1d1d1f", font=(ui_font, 25, "bold"))
         style.configure("Sub.TLabel", background="#ffffff", foreground="#6e6e73", font=(ui_font, 11))
         style.configure("Card.TLabel", background="#ffffff", foreground="#1d1d1f", font=(ui_font, 10))
         style.configure("Hint.TLabel", background="#ffffff", foreground="#86868b", font=(ui_font, 9))
@@ -143,10 +256,23 @@ class FormulaClip:
         style.configure("TEntry", fieldbackground="#ffffff", foreground="#1d1d1f", font=(ui_font, 10), padding=8, bordercolor="#d2d2d7", lightcolor="#d2d2d7", darkcolor="#d2d2d7")
         style.configure("TCombobox", fieldbackground="#ffffff", foreground="#1d1d1f", font=(ui_font, 10), padding=7)
 
-        page = ttk.Frame(self.root, padding=(42, 28), style="Page.TFrame")
+        page = ttk.Frame(self.root, padding=0, style="Page.TFrame")
         page.pack(fill="both", expand=True)
-        container = ttk.Frame(page, padding=26, style="Card.TFrame")
-        container.pack(fill="both", expand=True)
+        sidebar = tk.Frame(page, bg="#f0f0f2", width=220)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        tk.Label(sidebar, text="Formula Clip", bg="#f0f0f2", fg="#1d1d1f", font=(ui_font, 15, "bold"), anchor="w").pack(fill="x", padx=24, pady=(30, 34))
+        content = ttk.Frame(page, style="Page.TFrame")
+        content.pack(side="right", fill="both", expand=True)
+        api_tab = ttk.Frame(content, padding=(46, 38), style="Card.TFrame")
+        settings_tab = ttk.Frame(content, padding=(46, 38), style="Card.TFrame")
+        history_tab = ttk.Frame(content, padding=(46, 38), style="Card.TFrame")
+        self.pages = {"识别": api_tab, "历史记录": history_tab, "设置": settings_tab}
+        for text in ("识别", "历史记录", "设置"):
+            button = tk.Button(sidebar, text=text, anchor="w", relief="flat", bd=0, bg="#f0f0f2", activebackground="#dfeaff", activeforeground="#1264d8", fg="#4b4b50", font=(ui_font, 11), padx=24, pady=11, command=lambda name=text: self.show_page(name))
+            button.pack(fill="x")
+        tk.Label(sidebar, text="\n快捷键\n" + (self.settings.get("hotkey") or "Shift+Space"), justify="left", anchor="w", bg="#f0f0f2", fg="#86868b", font=(ui_font, 9), padx=24).pack(side="bottom", fill="x", pady=(0, 28))
+        container = api_tab
         ttk.Label(container, text="Formula Clip", style="Title.TLabel").pack(anchor="w")
         ttk.Label(container, text="截取公式，识别并复制 LaTeX。", style="Sub.TLabel").pack(anchor="w", pady=(4, 18))
 
@@ -184,6 +310,110 @@ class FormulaClip:
         self.output.pack(fill="both", expand=True)
         self.status = ttk.Label(container, text="准备就绪。填写支持图片输入的模型后，按 Shift+Space 开始截图。", style="Hint.TLabel")
         self.status.pack(anchor="w", pady=(10, 0))
+
+        self.build_settings_tab(settings_tab)
+        self.build_history_tab(history_tab)
+        self.show_page("识别")
+
+    def show_page(self, name):
+        for page in self.pages.values():
+            page.pack_forget()
+        self.pages[name].pack(fill="both", expand=True)
+
+    def build_settings_tab(self, parent):
+        ttk.Label(parent, text="应用设置", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(parent, text="控制启动方式、历史记录和识别完成提示。", style="Sub.TLabel").pack(anchor="w", pady=(4, 24))
+        self.autostart_var = tk.BooleanVar(value=self.settings.get("autostart") == "1")
+        self.keep_history_var = tk.BooleanVar(value=self.settings.get("keep_history") != "0")
+        self.show_toast_var = tk.BooleanVar(value=self.settings.get("show_toast") != "0")
+        for text, variable in (
+            ("开机时自动启动 Formula Clip", self.autostart_var),
+            ("保留识别历史记录（包含截图和 LaTeX）", self.keep_history_var),
+            ("识别成功后在右下角显示 1.5 秒提示", self.show_toast_var),
+        ):
+            row = tk.Frame(parent, bg="#ffffff", height=48)
+            row.pack(fill="x", pady=4)
+            row.pack_propagate(False)
+            tk.Label(row, text=text, bg="#ffffff", fg="#1d1d1f", font=("Microsoft YaHei UI", 10), anchor="w").pack(side="left", fill="x", expand=True)
+            ToggleSwitch(row, variable).pack(side="right", padx=4)
+        row = ttk.Frame(parent, style="Card.TFrame")
+        row.pack(fill="x", pady=10)
+        ttk.Label(row, text="最多保留记录", style="Card.TLabel").pack(side="left")
+        self.history_limit_var = tk.StringVar(value=self.settings.get("history_limit") or "100")
+        ttk.Combobox(row, textvariable=self.history_limit_var, state="readonly", width=16, values=("20", "50", "100", "200", "不限制")).pack(side="left", padx=20)
+        ttk.Button(parent, text="保存设置", style="Accent.TButton", command=self.save_app_settings).pack(anchor="w", pady=(22, 0))
+
+    def build_history_tab(self, parent):
+        ttk.Label(parent, text="历史记录", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(parent, text="查看过去识别的截图和 LaTeX 结果。", style="Sub.TLabel").pack(anchor="w", pady=(4, 14))
+        self.history_list = tk.Frame(parent, bg="#ffffff")
+        self.history_list.pack(fill="both", expand=True)
+        self.history_preview = tk.Text(parent, height=5, bg="#ffffff", fg="#1d1d1f", relief="solid", borderwidth=1, font=("Cascadia Mono", 10), wrap="word", padx=10, pady=8)
+        self.history_preview.pack(fill="x", pady=(14, 0))
+        self.refresh_history()
+
+    def refresh_history(self):
+        if not hasattr(self, "history_list"):
+            return
+        for child in self.history_list.winfo_children():
+            child.destroy()
+        self.history_rows = {}
+        self.history_thumbs = []
+        items = self.history.read()
+        if not items:
+            tk.Label(self.history_list, text="还没有识别记录", bg="#ffffff", fg="#86868b", font=("Microsoft YaHei UI", 11)).pack(pady=36)
+            return
+        for item in items:
+            card = tk.Frame(self.history_list, bg="#f8f8fa", padx=12, pady=10, cursor="hand2")
+            card.pack(fill="x", pady=(0, 8))
+            thumb = tk.Label(card, bg="#ffffff", width=110, height=58)
+            thumb.pack(side="left", padx=(0, 12))
+            try:
+                preview = Image.open(item.get("image", ""))
+                preview.thumbnail((110, 58))
+                photo = ImageTk.PhotoImage(preview)
+                thumb.configure(image=photo)
+                self.history_thumbs.append(photo)
+            except Exception:
+                thumb.configure(text="公式", fg="#86868b", font=("Microsoft YaHei UI", 10))
+            body = tk.Frame(card, bg="#f8f8fa")
+            body.pack(side="left", fill="both", expand=True)
+            tk.Label(body, text=item.get("time", ""), bg="#f8f8fa", fg="#86868b", font=("Microsoft YaHei UI", 9), anchor="w").pack(fill="x")
+            latex = item.get("latex", "")
+            tk.Label(body, text=latex if len(latex) < 100 else latex[:97] + "…", bg="#f8f8fa", fg="#1d1d1f", font=("Cascadia Mono", 10), anchor="w", justify="left").pack(fill="x", pady=(5, 0))
+            for widget in (card, thumb, body):
+                widget.bind("<Button-1>", lambda _event, selected=item: self.show_history_card(selected))
+
+    def show_history_item(self, _event=None):
+        return
+
+    def show_history_card(self, item):
+        self.history_preview.delete("1.0", "end")
+        self.history_preview.insert("1.0", item.get("latex", ""))
+
+    def save_app_settings(self):
+        limit = self.history_limit_var.get()
+        limit = "0" if limit == "不限制" else limit
+        self.settings.save_values({"autostart": "1" if self.autostart_var.get() else "0", "keep_history": "1" if self.keep_history_var.get() else "0", "history_limit": limit, "show_toast": "1" if self.show_toast_var.get() else "0"})
+        self.apply_autostart()
+        self.show_status("应用设置已保存。", "ok")
+
+    def apply_autostart(self):
+        if not winreg:
+            return
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+            if self.settings.get("autostart") == "1":
+                command = f'"{Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()}"'
+                winreg.SetValueEx(key, "FormulaClip", 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, "FormulaClip")
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        except Exception:
+            self.show_status("开机自启动设置失败，请检查系统权限。", "warn")
 
     def save_settings(self):
         values = {key: value.get() for key, value in self.fields.items()}
@@ -319,6 +549,7 @@ class FormulaClip:
             messagebox.showerror("截图失败", str(error))
 
     def recognize(self, image):
+        self.last_image = image.copy()
         api_key = self.fields["api_key"].get().strip()
         base_url = self.fields["base_url"].get().strip().rstrip("/")
         model = self.fields["model"].get().strip()
@@ -370,7 +601,28 @@ class FormulaClip:
         self.root.clipboard_append(latex)
         self.root.update()
         self.capture_button.state(["!disabled"])
+        if self.settings.get("keep_history") != "0" and self.last_image is not None:
+            self.history.add(self.last_image, latex, self.settings.get("history_limit") or "100")
+            self.refresh_history()
+        if self.settings.get("show_toast") != "0":
+            self.show_toast("公式识别完成", "LaTeX 已复制到剪贴板")
         self.show_status("完成：LaTeX 已复制到剪贴板。", "ok")
+
+    def show_toast(self, title, text):
+        toast = tk.Toplevel(self.root)
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.configure(bg="#1d1d1f")
+        frame = tk.Frame(toast, bg="#1d1d1f", padx=18, pady=12)
+        frame.pack()
+        tk.Label(frame, text=title, bg="#1d1d1f", fg="#ffffff", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        tk.Label(frame, text=text, bg="#1d1d1f", fg="#d2d2d7", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(3, 0))
+        toast.update_idletasks()
+        width, height = toast.winfo_width(), toast.winfo_height()
+        x = toast.winfo_screenwidth() - width - 24
+        y = toast.winfo_screenheight() - height - 48
+        toast.geometry(f"{width}x{height}+{x}+{y}")
+        toast.after(1500, toast.destroy)
 
     def show_error(self, message):
         self.capture_button.state(["!disabled"])
@@ -384,6 +636,8 @@ class FormulaClip:
     def quit(self):
         if self.hotkey_listener:
             self.hotkey_listener.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
         self.root.destroy()
 
     def run(self):
