@@ -301,6 +301,7 @@ class FormulaClip:
         actions.pack(fill="x", pady=(20, 12))
         tk.Button(actions, text="保存配置", command=self.save_settings, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=(ui_font, 10), padx=16, pady=9).pack(side="left")
         tk.Button(actions, text="获取模型", command=self.fetch_models, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=(ui_font, 10), padx=16, pady=9).pack(side="left", padx=(10, 0))
+        tk.Button(actions, text="测试连接", command=self.test_api, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=(ui_font, 10), padx=16, pady=9).pack(side="left", padx=(10, 0))
         self.capture_button = ttk.Button(actions, text=f"开始截图  {self.fields['hotkey'].get() or 'F1'}", style="Accent.TButton", command=self.capture)
         self.capture_button.pack(side="right")
 
@@ -511,6 +512,39 @@ class FormulaClip:
             return
         self.show_status("正在读取模型列表…", "normal")
         threading.Thread(target=self.request_models, args=(base_url, api_key), daemon=True).start()
+
+    def test_api(self):
+        base_url = self.fields["base_url"].get().strip().rstrip("/")
+        api_key = self.fields["api_key"].get().strip()
+        model = self.fields["model"].get().strip()
+        if not base_url or not api_key:
+            messagebox.showwarning("配置不完整", "请先填写 API 地址和 API 密钥。")
+            return
+        self.show_status("正在测试 API 连接…", "normal")
+        threading.Thread(target=self.request_api_test, args=(base_url, api_key, model), daemon=True).start()
+
+    def request_api_test(self, base_url, api_key, model):
+        try:
+            request = urllib.request.Request(base_url + "/models", headers={"Authorization": "Bearer " + api_key})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            models = [item.get("id") for item in payload.get("data", []) if item.get("id")]
+            selected = model if model and model in models else (model or "当前模型")
+            detail = f"API 连接成功。\n\n当前模型：{selected}\n可用模型数：{len(models)}"
+            self.root.after(0, lambda: self.api_test_result(True, detail))
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            self.root.after(0, lambda: self.api_test_result(False, f"HTTP {error.code}\n\n{detail[:500]}"))
+        except Exception as error:
+            self.root.after(0, lambda: self.api_test_result(False, str(error)))
+
+    def api_test_result(self, success, detail):
+        if success:
+            self.show_status("API 测试成功，可以开始识别。", "ok")
+            messagebox.showinfo("API 测试成功", detail)
+        else:
+            self.show_status("API 测试失败，请检查地址和密钥。", "warn")
+            messagebox.showerror("API 测试失败", detail)
 
     def request_models(self, base_url, api_key):
         try:
