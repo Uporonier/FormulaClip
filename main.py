@@ -249,10 +249,8 @@ class FormulaClip:
         style.configure("Sub.TLabel", background="#ffffff", foreground="#6e6e73", font=(ui_font, 11))
         style.configure("Card.TLabel", background="#ffffff", foreground="#1d1d1f", font=(ui_font, 10))
         style.configure("Hint.TLabel", background="#ffffff", foreground="#86868b", font=(ui_font, 9))
-        style.configure("Accent.TButton", font=(ui_font, 10, "bold"), padding=(18, 10), background="#1d1d1f", foreground="#ffffff", borderwidth=0)
-        style.map("Accent.TButton", background=[("active", "#424245")])
-        style.configure("Plain.TButton", font=(ui_font, 10), padding=(14, 9), background="#ffffff", foreground="#1d1d1f", bordercolor="#d2d2d7")
-        style.map("Plain.TButton", background=[("active", "#f5f5f7")])
+        style.configure("Accent.TButton", font=(ui_font, 10, "bold"), padding=(18, 10), background="#007aff", foreground="#ffffff", borderwidth=0, relief="flat")
+        style.map("Accent.TButton", background=[("active", "#0066d6")])
         style.configure("TEntry", fieldbackground="#ffffff", foreground="#1d1d1f", font=(ui_font, 10), padding=8, bordercolor="#d2d2d7", lightcolor="#d2d2d7", darkcolor="#d2d2d7")
         style.configure("TCombobox", fieldbackground="#ffffff", foreground="#1d1d1f", font=(ui_font, 10), padding=7)
 
@@ -294,13 +292,13 @@ class FormulaClip:
             entry.grid(row=row, column=1, sticky="ew", pady=8)
             self.fields[key] = variable
             if key == "hotkey":
-                ttk.Button(grid, text="录入", style="Plain.TButton", command=self.record_hotkey).grid(row=row, column=2, padx=(10, 0), pady=8)
+                tk.Button(grid, text="录入快捷键", command=self.record_hotkey, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=(ui_font, 9), padx=12, pady=7).grid(row=row, column=2, padx=(10, 0), pady=8)
         grid.columnconfigure(1, weight=1)
 
         actions = ttk.Frame(container, style="Card.TFrame")
         actions.pack(fill="x", pady=(20, 12))
-        ttk.Button(actions, text="保存配置", style="Plain.TButton", command=self.save_settings).pack(side="left")
-        ttk.Button(actions, text="获取模型", style="Plain.TButton", command=self.fetch_models).pack(side="left", padx=(10, 0))
+        tk.Button(actions, text="保存配置", command=self.save_settings, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=(ui_font, 10), padx=16, pady=9).pack(side="left")
+        tk.Button(actions, text="获取模型", command=self.fetch_models, relief="flat", bd=0, bg="#f2f2f7", fg="#1d1d1f", activebackground="#e5e5ea", font=(ui_font, 10), padx=16, pady=9).pack(side="left", padx=(10, 0))
         self.capture_button = ttk.Button(actions, text=f"开始截图  {self.fields['hotkey'].get() or 'F1'}", style="Accent.TButton", command=self.capture)
         self.capture_button.pack(side="right")
 
@@ -341,7 +339,7 @@ class FormulaClip:
         ttk.Label(row, text="最多保留记录", style="Card.TLabel").pack(side="left")
         self.history_limit_var = tk.StringVar(value=self.settings.get("history_limit") or "100")
         ttk.Combobox(row, textvariable=self.history_limit_var, state="readonly", width=16, values=("20", "50", "100", "200", "不限制")).pack(side="left", padx=20)
-        ttk.Button(parent, text="保存设置", style="Accent.TButton", command=self.save_app_settings).pack(anchor="w", pady=(22, 0))
+        tk.Button(parent, text="保存设置", command=self.save_app_settings, relief="flat", bd=0, bg="#007aff", fg="#ffffff", activebackground="#0066d6", activeforeground="#ffffff", font=("Microsoft YaHei UI", 10, "bold"), padx=20, pady=10).pack(anchor="w", pady=(22, 0))
 
     def build_history_tab(self, parent):
         ttk.Label(parent, text="历史记录", style="Title.TLabel").pack(anchor="w")
@@ -390,6 +388,12 @@ class FormulaClip:
     def show_history_card(self, item):
         self.history_preview.delete("1.0", "end")
         self.history_preview.insert("1.0", item.get("latex", ""))
+        self.root.clipboard_clear()
+        self.root.clipboard_append(item.get("latex", ""))
+        self.root.update()
+        self.show_status("历史公式已复制到剪贴板。", "ok")
+        if self.settings.get("show_toast") != "0":
+            self.show_toast("历史公式已复制", "可以直接粘贴 LaTeX。")
 
     def save_app_settings(self):
         limit = self.history_limit_var.get()

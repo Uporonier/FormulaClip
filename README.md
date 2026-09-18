@@ -120,7 +120,11 @@ DeepSeek 的模型能力会随产品版本变化；只有服务商明确支持�
 
 点击窗口右上角关闭按钮只会隐藏界面，程序仍会监听快捷键。右下角隐藏图标中右键 Formula Clip，可以重新打开界面或选择“退出程序”彻底关闭。
 
-![Formula Clip A 方案设计稿](docs/interface-a.png)
+![Formula Clip 实际识别界面](docs/interface-real.png)
+
+![Formula Clip 实际历史记录界面](docs/history-real.png)
+
+![Formula Clip 实际设置界面](docs/settings-real.png)
 
 当前 Windows 版本采用 A 方案的白色高 DPI 界面：左侧品牌栏保持完整显示，设置项使用蓝色切换开关，历史记录显示缩略图与 LaTeX 摘要，截图时使用深色遮罩和蓝色选框，确认按钮固定在选区下方。
 
