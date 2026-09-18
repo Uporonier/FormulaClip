@@ -167,6 +167,8 @@ class FormulaClip:
                 entry = ttk.Entry(grid, textvariable=variable, width=54, show="•" if key == "api_key" else "")
             entry.grid(row=row, column=1, sticky="ew", pady=8)
             self.fields[key] = variable
+            if key == "hotkey":
+                ttk.Button(grid, text="录入", style="Plain.TButton", command=self.record_hotkey).grid(row=row, column=2, padx=(10, 0), pady=8)
         grid.columnconfigure(1, weight=1)
 
         actions = ttk.Frame(container, style="Card.TFrame")
@@ -192,6 +194,41 @@ class FormulaClip:
         self.start_hotkey()
         self.capture_button.configure(text=f"开始截图  {values['hotkey'] or 'F1'}")
         self.show_status("配置已保存。", "ok")
+
+    def record_hotkey(self):
+        """Capture a shortcut in-app, so users do not need to learn key syntax."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("录入截图快捷键")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.configure(bg="#ffffff")
+        ttk.Label(dialog, text="请按下新的截图快捷键", style="Title.TLabel").pack(padx=30, pady=(24, 8))
+        ttk.Label(dialog, text="例如 Shift + Space 或 Ctrl + Shift + S。按 Esc 取消。", style="Sub.TLabel").pack(padx=30, pady=(0, 22))
+
+        def on_key(event):
+            if event.keysym == "Escape":
+                dialog.destroy()
+                return "break"
+            ignored = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Meta_L", "Meta_R"}
+            if event.keysym in ignored:
+                return "break"
+            modifiers = []
+            if event.state & 0x0004:
+                modifiers.append("Ctrl")
+            if event.state & 0x0001:
+                modifiers.append("Shift")
+            if event.state & 0x0008:
+                modifiers.append("Alt")
+            key = "Space" if event.keysym == "space" else event.keysym.upper() if len(event.keysym) == 1 else event.keysym
+            shortcut = "+".join(modifiers + [key])
+            self.fields["hotkey"].set(shortcut)
+            dialog.destroy()
+            self.show_status(f"快捷键已设为 {shortcut}；点击保存配置后生效。", "ok")
+            return "break"
+
+        dialog.bind("<KeyPress>", on_key)
+        dialog.after(100, dialog.focus_force)
 
     def apply_provider(self, _event=None):
         presets = {
