@@ -206,20 +206,34 @@ class FormulaClip:
         ttk.Label(dialog, text="请按下新的截图快捷键", style="Title.TLabel").pack(padx=30, pady=(24, 8))
         ttk.Label(dialog, text="例如 Shift + Space 或 Ctrl + Shift + S。按 Esc 取消。", style="Sub.TLabel").pack(padx=30, pady=(0, 22))
 
+        pressed_modifiers = set()
+        modifier_names = {
+            "Shift_L": "Shift", "Shift_R": "Shift",
+            "Control_L": "Ctrl", "Control_R": "Ctrl",
+            "Alt_L": "Alt", "Alt_R": "Alt",
+            "Meta_L": "Win", "Meta_R": "Win",
+        }
+
+        def on_modifier_down(event):
+            name = modifier_names.get(event.keysym)
+            if name:
+                pressed_modifiers.add(name)
+            return "break"
+
+        def on_modifier_up(event):
+            name = modifier_names.get(event.keysym)
+            if name:
+                pressed_modifiers.discard(name)
+            return "break"
+
         def on_key(event):
             if event.keysym == "Escape":
                 dialog.destroy()
                 return "break"
-            ignored = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Meta_L", "Meta_R"}
-            if event.keysym in ignored:
+            if event.keysym in modifier_names:
+                pressed_modifiers.add(modifier_names[event.keysym])
                 return "break"
-            modifiers = []
-            if event.state & 0x0004:
-                modifiers.append("Ctrl")
-            if event.state & 0x0001:
-                modifiers.append("Shift")
-            if event.state & 0x0008:
-                modifiers.append("Alt")
+            modifiers = [name for name in ("Ctrl", "Shift", "Alt", "Win") if name in pressed_modifiers]
             key = "Space" if event.keysym == "space" else event.keysym.upper() if len(event.keysym) == 1 else event.keysym
             shortcut = "+".join(modifiers + [key])
             self.fields["hotkey"].set(shortcut)
@@ -228,6 +242,15 @@ class FormulaClip:
             return "break"
 
         dialog.bind("<KeyPress>", on_key)
+        dialog.bind("<KeyPress-Shift_L>", on_modifier_down)
+        dialog.bind("<KeyPress-Shift_R>", on_modifier_down)
+        dialog.bind("<KeyPress-Control_L>", on_modifier_down)
+        dialog.bind("<KeyPress-Control_R>", on_modifier_down)
+        dialog.bind("<KeyPress-Alt_L>", on_modifier_down)
+        dialog.bind("<KeyPress-Alt_R>", on_modifier_down)
+        dialog.bind("<KeyPress-Meta_L>", on_modifier_down)
+        dialog.bind("<KeyPress-Meta_R>", on_modifier_down)
+        dialog.bind("<KeyRelease>", on_modifier_up)
         dialog.after(100, dialog.focus_force)
 
     def apply_provider(self, _event=None):
