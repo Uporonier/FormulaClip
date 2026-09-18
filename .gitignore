@@ -6,6 +6,7 @@ __pycache__/
 # Packaging
 build/
 dist/
+release-*/
 *.spec
 
 # Local user configuration and secrets
