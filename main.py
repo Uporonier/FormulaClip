@@ -109,9 +109,9 @@ class HistoryStore:
 
 class ToggleSwitch(tk.Frame):
     def __init__(self, parent, variable, **kwargs):
-        super().__init__(parent, bg="#ffffff", width=48, height=28, **kwargs)
+        super().__init__(parent, bg="#ffffff", width=52, height=30, **kwargs)
         self.variable = variable
-        self.canvas = tk.Canvas(self, width=48, height=28, bg="#ffffff", highlightthickness=0)
+        self.canvas = tk.Canvas(self, width=52, height=30, bg="#ffffff", highlightthickness=0)
         self.canvas.pack()
         self.canvas.bind("<Button-1>", self.toggle)
         self.variable.trace_add("write", lambda *_: self.draw())
@@ -123,10 +123,12 @@ class ToggleSwitch(tk.Frame):
     def draw(self):
         self.canvas.delete("all")
         active = self.variable.get()
-        color = "#007aff" if active else "#d2d2d7"
-        self.canvas.create_oval(1, 1, 47, 27, fill=color, outline=color)
-        x = 34 if active else 14
-        self.canvas.create_oval(x - 10, 4, x + 10, 24, fill="#ffffff", outline="#ffffff")
+        color = "#007aff" if active else "#d1d1d6"
+        self.canvas.create_rectangle(12, 4, 40, 26, fill=color, outline=color)
+        self.canvas.create_oval(1, 4, 23, 26, fill=color, outline=color)
+        self.canvas.create_oval(29, 4, 51, 26, fill=color, outline=color)
+        x = 39 if active else 13
+        self.canvas.create_oval(x - 9, 6, x + 9, 24, fill="#ffffff", outline="#ffffff")
 
     def get(self):
         return bool(self.variable.get())
@@ -379,8 +381,12 @@ class FormulaClip:
             tk.Label(body, text=item.get("time", ""), bg="#f8f8fa", fg="#86868b", font=("Microsoft YaHei UI", 9), anchor="w").pack(fill="x")
             latex = item.get("latex", "")
             tk.Label(body, text=latex if len(latex) < 100 else latex[:97] + "…", bg="#f8f8fa", fg="#1d1d1f", font=("Cascadia Mono", 10), anchor="w", justify="left").pack(fill="x", pady=(5, 0))
-            for widget in (card, thumb, body):
+            def bind_row(widget):
                 widget.bind("<Button-1>", lambda _event, selected=item: self.show_history_card(selected))
+                widget.configure(cursor="hand2")
+                for child in widget.winfo_children():
+                    bind_row(child)
+            bind_row(card)
 
     def show_history_item(self, _event=None):
         return
