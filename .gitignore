@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Packaging
+build/
+dist/
+*.spec
+
+# Local user configuration and secrets
+config.ini
+*.env
+
+# Editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
